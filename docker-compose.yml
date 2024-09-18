@@ -1,0 +1,150 @@
+version: '3'
+services:
+  # Service to generate and share public/private certificates
+  init-ca:
+    domainname: ${DOMAIN}
+    hostname: ca
+    build: ./rd-connect-common-key-generator
+    image: "${DOMAIN}/init_ca:0.4"
+    # Disable the default entrypoint
+    entrypoint: [ ]
+    # This service should be alive only for initialization purposes
+    command: ["timeout","-t","180","/usr/sbin/lighttpd", "-D", "-f", "/etc/lighttpd/lighttpd.conf"]
+    volumes:
+       - init_ca_keystore:/etc/rd-connect_keystore
+  
+  # Service to interchange generated credentials (mainly LDAP ones)
+  init-cred-broker:
+    domainname: ${DOMAIN}
+    hostname: cred-broker
+    image: "redis:5-alpine"
+    # This service should be alive only for initialization purposes
+    command: ["timeout","-t","180","redis-server"]
+  
+  init-lfs-centos:
+    build: ./centos_rd-connect
+    image: "${DOMAIN}/centos:7"
+    command: [ "/bin/true" ]
+  
+  init-httpd-centos:
+    build: ./httpd_rd-connect
+    image: "${DOMAIN}/httpd:2.4"
+    depends_on:
+       - init-lfs-centos
+    command: [ "/bin/true" ]
+
+  init-openjdk-centos:
+    build: ./openjdk_rd-connect
+    image: "${DOMAIN}/openjdk:8"
+    depends_on:
+       - init-lfs-centos
+    command: [ "/bin/true" ]
+  
+  init-tomcat-centos:
+    build: ./tomcat_rd-connect
+    image: "${DOMAIN}/tomcat:8"
+    depends_on:
+       - init-openjdk-centos
+    command: [ "/bin/true" ]
+  
+  casldap:
+    domainname: ${DOMAIN}
+    hostname: ldap
+    build: ./openldap_rd-connect
+    image: "${DOMAIN}/cas-ldap:cas-4.1.x"
+    depends_on:
+       - init-lfs-centos
+    links:
+       - init-ca:ca.${DOMAIN}
+       - init-cred-broker:cred-broker.${DOMAIN}
+    environment:
+       - CA_BROKER=ca.${DOMAIN}
+       - CRED_BROKER=cred-broker.${DOMAIN}
+    volumes:
+       - ldap_conf:/etc/openldap
+       - ldap_db:/var/lib/ldap
+       - ldap_logs:/var/log
+  cas:
+    domainname: ${DOMAIN}
+    hostname: rdconnectcas
+    build: ./cas-server_rd-connect
+    image: "${DOMAIN}/rdconnect_cas:cas-4.1.x"
+    depends_on:
+       - init-tomcat-centos
+    links:
+       - init-ca:ca.${DOMAIN}
+       - init-cred-broker:cred-broker.${DOMAIN}
+       - casldap:ldap.${DOMAIN}
+    environment:
+       - CA_BROKER=ca.${DOMAIN}
+       - CRED_BROKER=cred-broker.${DOMAIN}
+       - LDAP_SERVER=ldap.${DOMAIN}
+    volumes:
+       - cas_conf:/etc/cas
+       - tomcat_conf:/etc/tomcat8
+       - cas_logs:/var/log
+    ports:
+       - "9443:9443"
+  pla:
+    domainname: ${DOMAIN}
+    hostname: rdconnect-pla
+    build: ./phpldapadmin_rd-connect
+    image: "${DOMAIN}/phpldapadmin:1.2.3"
+    depends_on:
+       - init-httpd-centos
+    links:
+       - init-ca:ca.${DOMAIN}
+       - casldap:ldap.${DOMAIN}
+    environment:
+       - CA_BROKER=ca.${DOMAIN}
+       - CRED_BROKER=cred-broker.${DOMAIN}
+       - LDAP_SERVER=ldap.${DOMAIN}
+       - PLA_SERVER=rdconnect-pla.${DOMAIN}
+    volumes:
+       - pla_conf:/etc/phpldapadmin
+       - pla_ldap:/etc/openldap
+       - pla_pki:/etc/pki/tls
+       - pla_logs:/var/log/httpd
+    ports:
+      - "9444:443"
+  umi:
+    domainname: ${DOMAIN}
+    hostname: rdconnect-umi
+    build: ./umi_rd-connect
+    image: "${DOMAIN}/rdconnect-umi:latest"
+    depends_on:
+       - init-httpd-centos
+    links:
+       - init-ca:ca.${DOMAIN}
+       - init-cred-broker:cred-broker.${DOMAIN}
+       - casldap:ldap.${DOMAIN}
+       - cas:rdconnectcas.${DOMAIN}
+    environment:
+       - CA_BROKER=ca.${DOMAIN}
+       - CRED_BROKER=cred-broker.${DOMAIN}
+       - LDAP_SERVER=ldap.${DOMAIN}
+       - CAS_SERVER=rdconnectcas.${DOMAIN}
+       - CAS_PORT=9443
+    volumes:
+       - umi_conf:/home/rdconnect-rest/RDConnect-UserManagement-REST-API/configs
+       - umi_ldap:/etc/openldap
+       - umi_pki:/etc/pki/tls
+       - umi_logs:/var/log/httpd
+    ports:
+      - "9445:443"
+volumes:
+  init_ca_keystore:
+  ldap_conf:
+  ldap_db:
+  ldap_logs:
+  cas_conf:
+  tomcat_conf:
+  cas_logs:
+  pla_conf:
+  pla_ldap:
+  pla_pki:
+  pla_logs:
+  umi_conf:
+  umi_ldap:
+  umi_pki:
+  umi_logs:
